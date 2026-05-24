@@ -1,0 +1,10 @@
+SET(SOURCES ui_comp_button1.c
+    ui_comp.c
+    ui_Screen1.c
+    ui_Screen2.c
+    ui.c
+    ui_comp_hook.c
+    ui_helpers.c
+    ui_img_wifi_h_png.c)
+
+add_library(ui ${SOURCES})
