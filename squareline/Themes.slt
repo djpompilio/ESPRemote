@@ -1,0 +1,39 @@
+{
+  "deftheme": {
+    "name": "Default",
+    "properties": [
+      {
+        "nid": 1000343,
+        "strtype": "THEME_COLOR",
+        "strval": "Blue",
+        "intarray": [
+          0,
+          0,
+          0,
+          255
+        ],
+        "InheritedType": 0
+      }
+    ]
+  },
+  "themes": [
+    {
+      "name": "ESP Remote",
+      "properties": [
+        {
+          "nid": 1000343,
+          "strtype": "THEME_COLOR",
+          "strval": "Blue",
+          "intarray": [
+            0,
+            0,
+            0,
+            255
+          ],
+          "InheritedType": 0
+        }
+      ]
+    }
+  ],
+  "selected_theme": "ESP Remote"
+}

@@ -1,6 +1,8 @@
 /*
-ESP Remote
-By: Dominic Pompilio
+
+      --ESP Remote--
+    By: Dominic Pompilio
+          2026
 
 
 
@@ -10,7 +12,21 @@ By: Dominic Pompilio
 
 */
 
+/* 
 
+NOTES & TODO
+
+  Hardware
+    - Add light sensor
+    - Redesign bottom case to have reset hole and guide up to esp's reset button
+    - Clear cover for ir leds
+
+  Software
+    - LCD Driver
+    - Axcelerometer wake up
+    - Auto screen brightness
+
+*/
 
 
 #include <Arduino.h>
@@ -19,7 +35,10 @@ By: Dominic Pompilio
 #include "DFRobot_GDL.h"
 #include "DFRobot_Picdecoder_SD.h"
 #include "DFRobot_Touch.h"
-//
+#include "TFT_eSPI.h"
+#include "lvgl.h"
+#include <../ui/ui.h>
+//Das WIIFII
 #include <credentials.h>
 #include "WiFi.h"
 #include "time.h"
@@ -39,6 +58,23 @@ By: Dominic Pompilio
 #include <Adafruit_Sensor.h>
 #include <Adafruit_ADXL343.h>
 
+//ULP
+//#include "esp32/ulp.h"
+//#include "ulp_main.h"
+//#include "ulptool.h"
+#include "esp32/ulp.h"
+// include ulp header you will create
+#include "ulp_main.h"
+// must include ulptool helper functions also
+#include "ulptool.h"
+
+extern const uint8_t ulp_main_bin_start[] asm("_binary_ulp_main_bin_start");
+extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_main_bin_end");
+
+
+//not working
+//#include "../ui/lv_conf.h"
+
 
 
 #define LCD_DC    D2
@@ -50,8 +86,11 @@ By: Dominic Pompilio
 #define TOUCH_INT D11 //d11
 #define buttonPin GPIO_NUM_4 //A0
 #define BATT_VOLT A2
-#define IR_LED GPIO_NUM_43 //TX
+#define IR_LED GPIO_NUM_11 //A5
 #define IR_REC D14
+
+//not working
+#define LV_CONF_INCLUDE_SIMPLE
 
 Adafruit_ADXL343 accel = Adafruit_ADXL343(12345);
 
@@ -86,6 +125,44 @@ uint32_t Wheel(byte WheelPos) {
   }
   return 0;
 }
+/** 
+//LVGL
+
+static const uint16_t screenWidth = 240;
+static const uint16_t screenHeight = 320;
+
+static lv_disp_draw_buf_t draw_buf;
+static lv_color_t buf[screenWidth * screenHeight / 10];
+
+TFT_eSPI lcd = TFT_eSPI(screenWidth, screenHeight);
+
+void disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
+  uint32_t w = (area->x2 - area->x1 + 1);
+  uint32_t h = (area->y2 - area->y1 + 1);
+
+  lcd.startWrite();
+  lcd.setAddrWindow(area->x1, area->y1, w, h);
+  lcd.pushColors((uint16_t *)&color_p->full, w * h, true);
+  lcd.endWrite();
+
+  lv_disp_flush_ready(disp);  // Let LVGL know the flushing is done
+}
+
+void touch_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
+  uint16_t touchX = 0, touchY = 0;
+  bool touched = lcd.getTouch(&touchX, &touchY, 600);
+
+  if (!touched) {
+    data->state = LV_INDEV_STATE_REL;  // Not touched
+  } else {
+    data->state = LV_INDEV_STATE_PR;  // Pressed
+    data->point.x = touchX;  // Update X position
+    data->point.y = touchY;  // Update Y position
+  }
+}
+
+*/
+
 
 
 
@@ -99,6 +176,8 @@ DFRobot_Touch_GT911_IPS touch(0X5D,TOUCH_RST,TOUCH_INT);
    @param rst Reset pin of the screen
 */
 DFRobot_ST7365P_320x480_HW_SPI screen(/*dc=*/LCD_DC,/*cs=*/LCD_CS,/*rst=*/LCD_RST,/*bl=*/LCD_BL);
+
+
 
 /**
    @brief Constructor
@@ -125,26 +204,43 @@ void updateWifiSig() {
     }
   }
 
-void updateBattPercent() {
+// Battery Percentage Calculation
+
+int calculateBattPercent() {
   int battValue = analogRead(BATT_VOLT);
-  Serial.println(battValue);
+  //Serial.print("Analog Battery Value: ");
+  //Serial.println(battValue);
   int f = battValue - 2512;
-  float h = (f / 1000.0);
-  int battPercent = h*100;
-  Serial.println(battPercent);
-  if (battPercent > 75) { //76-100%
-    decoder.drawPicture(/*filename=*/"/images/battery100percent.bmp",/*sx=*/10,/*sy=*/205,/*ex=*/104,/*ey=*/50,/*screenDrawPixel=*/screenDrawPixel);
-    }
-  else if (battPercent > 50) {  //51-75%
-    decoder.drawPicture(/*filename=*/"/images/battery75percent.bmp",/*sx=*/200,/*sy=*/5,/*ex=*/52,/*ey=*/25,/*screenDrawPixel=*/screenDrawPixel);
-    }
-  else if (battPercent > 25) {  //26-50%
-    decoder.drawPicture(/*filename=*/"/images/battery50percent.bmp",/*sx=*/200,/*sy=*/5,/*ex=*/52,/*ey=*/25,/*screenDrawPixel=*/screenDrawPixel);
-    }
-  else {  //25-0%
-    decoder.drawPicture(/*filename=*/"/images/battery25percent.bmp",/*sx=*/200,/*sy=*/5,/*ex=*/52,/*ey=*/25,/*screenDrawPixel=*/screenDrawPixel);
-    }
+  float h = (f / 1000.0); // clean up these 2 lines by dividing by 10 instead
+  int battPercent = h*100; // save to above
+  return battPercent;
+
 }
+
+//Change array length to adjust sample size of battery measurements
+int battHist[20] = {0};
+
+void updateBattPercent() {
+
+  int battPercent;
+  int sum = 0;
+  int baSampleSize = sizeof(battHist) / sizeof(battHist[0]);
+
+  for (int i = 0; i <baSampleSize; i++) {
+    battPercent = calculateBattPercent();
+    battHist[i] = battPercent;
+  }
+  for (int i = 0; i <baSampleSize; i++) {
+    sum += battHist[i];
+  }
+  
+  int battery = sum/baSampleSize;
+
+  Serial.print("Calculated Battery Percentage: ");
+  Serial.print(battery);
+  Serial.println("%");
+  }
+
 
 TrellisCallback blink(keyEvent evt){
   // Check is the pad pressed?
@@ -179,6 +275,19 @@ char timeStringBuff[64];
 
 void slpBtnCallback(DFRobot_UI::sButton_t &btn,DFRobot_UI::sTextBox_t &obj) {
   esp_deep_sleep_start();
+}
+uint16_t rawData[239] = {1275, 386, 1277, 440, 432, 1222, 1301, 413, 1277, 386, 459, 1246, 431, 1221, 458, 1247, 432, 1220, 459, 1221, 458, 1247, 1278, 7196, 1277, 413, 1249, 441, 431, 1247, 1277, 413, 1278, 386, 459, 1247, 431, 1247, 431, 1221, 458, 1223, 457, 1221, 458, 1219, 1306, 8276, 1277, 388, 1303, 386, 459, 1248, 1277, 413, 1278, 413, 432, 1248, 431, 1221, 458, 1224, 455, 1219, 460, 1247, 432, 1247, 1278, 7192, 1277, 387, 1304, 386, 459, 1220, 1304, 386, 1305, 413, 432, 1247, 432, 1220, 459, 1247, 432, 1221, 459, 1222, 458, 1220, 1306, 8275, 1278, 389, 1302, 385, 460, 1246, 1277, 386, 1304, 413, 431, 1247, 431, 1247, 431, 1219, 459, 1246, 432, 1221, 457, 1247, 1277, 7189, 1277, 386, 1304, 413, 432, 1221, 1303, 412, 1279, 412, 433, 1247, 432, 1246, 432, 1220, 458, 1219, 459, 1247, 431, 1218, 1306, 8281, 1277, 387, 1304, 388, 457, 1247, 1277, 413, 1278, 412, 433, 1247, 432, 1248, 432, 1219, 460, 1248, 432, 1221, 459, 1248, 1278, 7196, 1278, 387, 1303, 387, 458, 1247, 1277, 387, 1304, 387, 458, 1247, 432, 1247, 431, 1247, 432, 1248, 432, 1248, 432, 1248, 1278, 8251, 1301, 413, 1278, 413, 432, 1222, 1302, 388, 1302, 413, 432, 1247, 431, 1220, 458, 1220, 458, 1220, 458, 1247, 431, 1246, 1250, 7197, 1276, 441, 1249, 440, 432, 1222, 1275, 441, 1250, 414, 459, 1221, 459, 1219, 460, 1247, 432, 1247, 432, 1247, 432, 1247, 1277};
+uint16_t rawData2[239] = {0, 109, 34, 3, 169, 168, 21, 63, 21, 63, 21, 63, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 63, 21, 63, 21, 63, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 63, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 64, 21, 21, 21, 63, 21, 63, 21, 63, 21, 63, 21, 63, 21, 63, 21, 1794, 169, 168, 21, 21, 21, 3694};
+uint16_t Samsung_power_toggle[71] = {
+    38000, 1,  1,  170, 170, 20, 63, 20, 63, 20, 63,  20, 20, 20, 20,
+    20,    20, 20, 20,  20,  20, 20, 63, 20, 63, 20,  63, 20, 20, 20,
+    20,    20, 20, 20,  20,  20, 20, 20, 20, 20, 63,  20, 20, 20, 20,
+    20,    20, 20, 20,  20,  20, 20, 20, 20, 63, 20,  20, 20, 63, 20,
+    63,    20, 63, 20,  63,  20, 63, 20, 63, 20, 1798};
+void fnBtnCallback(DFRobot_UI::sButton_t &btn,DFRobot_UI::sTextBox_t &obj) {
+  irsend.sendRaw(rawData, 239, 38000);
+  //irsend.sendGC(Samsung_power_toggle, 71);
+
 }
 DFRobot_UI::sButton_t & menuBackBtn = ui.creatButton();
 DFRobot_UI::sSlider_t &screenBrightness = ui.creatSlider();
@@ -218,15 +327,6 @@ void menuBackBtnCallback(DFRobot_UI::sButton_t &btn,DFRobot_UI::sTextBox_t &obj)
 void int1_isr(void)
 {
     esp_sleep_enable_ext0_wakeup(GPIO_NUM_4, GPIO_INTR_HIGH_LEVEL); //A0 High
-
-    /* By default, this sketch routes the OVERRUN interrupt to INT1. */
-    /*Serial.println("_______");
-    Serial.println("INT");
-    int ADXL = analogRead(buttonPin);
-    Serial.println(ADXL);
-    Serial.println("_______");*/
-
-    /* TODO: Toggle an LED! */
 }
 /** Configures the HW interrupts on the ADXL343 and the target MCU. */
 void config_interrupts(void)
@@ -276,14 +376,25 @@ void config_interrupts(void)
   
 }
 
+static void init_run_ulp(uint32_t usec);
+
+static void init_run_ulp(uint32_t usec) {
+  ulp_set_wakeup_period(0, usec);
+  esp_err_t err = ulptool_load_binary(0, ulp_main_bin_start, (ulp_main_bin_end - ulp_main_bin_start) / sizeof(uint32_t));
+  err = ulp_run((&ulp_entry - RTC_SLOW_MEM) / sizeof(uint32_t));
+
+  if (err) Serial.println("Error Starting ULP Coprocessor");
+}
+
+
 void setup()
 {
   Serial.begin(9600);
   Serial.print("--Serial Comms Up--");
   irsend.begin();
-  pinMode(LCD_CS, OUTPUT);
+  //pinMode(LCD_CS, OUTPUT);
   pinMode(LCD_SD, OUTPUT);
-  analogWrite(D13, 120); //screen brightness
+  //analogWrite(D13, 120); //screen brightness
   //gpio_wakeup_enable(buttonPin, GPIO_INTR_HIGH_LEVEL);
   
 
@@ -303,34 +414,55 @@ void setup()
   /* Configure the HW interrupts. */
   config_interrupts();
 
+  /** 
 
+//LVGL
 
+  lv_init();
+  lcd.begin();  // Start the TFT display
+  lcd.setRotation(0);  // Set screen orientation
+  SD.begin(LCD_SD);
+  // Initialize LVGL's draw buffer
+  lv_disp_draw_buf_init(&draw_buf, buf, NULL, screenWidth * screenHeight / 10);
+
+  // Initialize the display driver
+  static lv_disp_drv_t disp_drv;
+  lv_disp_drv_init(&disp_drv);
+  disp_drv.hor_res = screenWidth;
+  disp_drv.ver_res = screenHeight;
+  disp_drv.flush_cb = disp_flush;  // Attach our flush function
+  disp_drv.draw_buf = &draw_buf;
+  lv_disp_drv_register(&disp_drv);
+*/
+
+ // WiFi.begin(ssid, password);
+ // Serial.print("Connecting to WiFi...");
+ // while (WiFi.status() != WL_CONNECTED) { // indicate that the ESP32 is trying to connect
+ //   decoder.drawPicture(/*filename=*/"/images/wifi_N.bmp",/*sx=*/5,/*sy=*/10,/*ex=*/70,/*ey=*/28,/*screenDrawPixel=*/screenDrawPixel);
+    //ui.drawString(/*x=*/screen.width()/3,/*y=*/10,"Connect",COLOR_RGB565_WHITE,ui.bgColor,/*fontsize =*/2,/*Invert=*/0);
+ //   printLocalDateTime();
+  //  ui.refresh();
+ // }
+ // Serial.println("Connected!");
+ // Serial.println(WiFi.RSSI());
+ // updateWifiSig();
+
+  
+
+ // configTime(gmtOffset_sec, daylightOffset_sec, ntpServer); // configure time settings
+ // printLocalDateTime();
 
   //Initialize UI
   ui.begin();
-  SD.begin(LCD_SD);
-  ui.setTheme(DFRobot_UI::MODERN);
-  ui.setBgColor(0x4bb2);
+  
+  //ui.setTheme(DFRobot_UI::MODERN);
+  //ui.setBgColor(0x4bb2);
 
 
   menuBackBtn.setText("Back");
   menuBackBtn.bgColor = COLOR_RGB565_DGRAY;
   menuBackBtn.setCallback(menuBackBtnCallback);
-  screenBrightness.setCallback(changeBrightness);
-
-
-
-  //decoder.drawPicture(/*filename=*/"/images/battery100percent.bmp",/*sx=*/0,/*sy=*/0,/*ex=*/130,/*ey=*/63,/*screenDrawPixel=*/screenDrawPixel);
-/*
-    //battery level
-  DFRobot_UI::sBar_t &bar1 = ui.creatBar();
-  /** User-defined progress bar parameters */
- // bar1.setStyle(DFRobot_UI::BAR);
-  //bar1.fgColor = COLOR_RGB565_GREEN;
- // bar1.width = 75;
- // bar1.height = 5;
-  //bar1.setCallback(barCallback1);
-  //ui.draw(&bar1,/*x=*/220,/*y=*/10);
+  //screenBrightness.setCallback(changeBrightness);
 
   //Sleep button
   DFRobot_UI::sButton_t & slpBtn = ui.creatButton();
@@ -349,23 +481,13 @@ void setup()
   ui.draw(&menuBtn,/**x=*/5,/**y=*/60,/*width*/screen.width()/4,/*height*/screen.width()/10);
 
 
+  DFRobot_UI::sButton_t & fnBtn = ui.creatButton();
+  fnBtn.setText("Fan");
+  fnBtn.bgColor = COLOR_RGB565_PINK;
+  fnBtn.setCallback(fnBtnCallback);
+  ui.draw(&fnBtn,/**x=*/115,/**y=*/80,/*width*/screen.width()/4,/*height*/screen.width()/10);
 
-
-
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi...");
-  while (WiFi.status() != WL_CONNECTED) { // indicate that the ESP32 is trying to connect
-    decoder.drawPicture(/*filename=*/"/images/wifi_N.bmp",/*sx=*/5,/*sy=*/10,/*ex=*/70,/*ey=*/28,/*screenDrawPixel=*/screenDrawPixel);
-    //ui.drawString(/*x=*/screen.width()/3,/*y=*/10,"Connect",COLOR_RGB565_WHITE,ui.bgColor,/*fontsize =*/2,/*Invert=*/0);
-    printLocalDateTime();
-    ui.refresh();
-  }
-  Serial.println("Connected!");
-  Serial.println(WiFi.RSSI());
-  updateWifiSig();
   
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer); // configure time settings
-  printLocalDateTime();
 
 
 
@@ -398,6 +520,7 @@ void setup()
     delay(50);
   }
 
+  //ui_init();
 
   
 }
@@ -405,23 +528,31 @@ void setup()
 
 void loop()
 {
-    //screen.setFont(&FreeSans12pt7b);
   updateBattPercent();
-  updateWifiSig();
-  //refresh
-  ui.refresh();
+ // updateWifiSig();
   //decoder.drawPicture(/*filename=*/"/images/wifi_M.bmp",/*sx=*/0,/*sy=*/0,/*ex=*/100,/*ey=*/30,/*screenDrawPixel=*/screenDrawPixel);
-  printLocalDateTime();
+ // printLocalDateTime();
   trellis.read();
 
+  ui.refresh();
   //troubleshooting gyro
+
+  float temp_celsius = temperatureRead();
+
+  Serial.print("Chip Temperature: ");
+  Serial.print(temp_celsius);
+  Serial.println("°C");
 
   sensors_event_t event;
   accel.getEvent(&event);
   accel.getEvent(&event);
+  Serial.println("");
   Serial.print("X: "); Serial.print(event.acceleration.x); Serial.print("  ");
   Serial.print("Y: "); Serial.print(event.acceleration.y); Serial.print("  ");
-  Serial.print("Z: "); Serial.print(event.acceleration.z); Serial.print("  ");Serial.println("m/s^2 ");
+  Serial.print("Z: "); Serial.print(event.acceleration.z); Serial.print("  ");
+  Serial.println("m/s^2 ");
   Serial.println("");
-}
 
+  ESP_LOGI(TAG, "ULP Loop Count: %d", (int)ulp_loop_count);
+
+}
